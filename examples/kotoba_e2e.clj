@@ -4,7 +4,7 @@
   Starts a graph with 2 nodes (counter → decider), runs it to completion
   over 3 threads, then verifies that state persists across re-invocations.
 
-  Run (kotoba-server must be running on KOTOBA_URL):
+  ── Local dev (datomic-checkpointer, requires operator JWT + custom graph) ──
     KOTOBA_URL=http://localhost:8077 \\
     KOTOBA_GRAPH=bafyreici6lf6ewlgskwxznw5sa6kydis3y6nmy5qhjq5f7rbog3u7dapc4 \\
     KOTOBA_TOKEN=<operator-jwt> \\
@@ -12,10 +12,20 @@
                             :deps {org.clojure/data.json {:mvn/version \"2.5.0\"}}}' \\
            -M -e '(require (quote kotoba-e2e)) (kotoba-e2e/-main)'
 
-  KOTOBA_GRAPH is the multibase CID derived from the graph name bytes.
-  KOTOBA_TOKEN is an operator JWT: base64url({\"alg\":\"HS256\",\"typ\":\"JWT\"}).base64url({\"sub\":\"<operator-did>\",\"exp\":9999999999}).anysig"
+  ── kotobase.net (kg-checkpointer, any Bearer JWT, no datomic.transact needed) ──
+    KOTOBA_URL=https://kotobase.net \\
+    KOTOBA_TOKEN=<bearer-jwt> \\
+    KOTOBA_KG=1 \\
+    clojure -A:dev -Sdeps '{:paths [\"src\" \"examples\"],
+                            :deps {org.clojure/data.json {:mvn/version \"2.5.0\"}}}' \\
+           -M -e '(require (quote kotoba-e2e)) (kotoba-e2e/-main)'
+
+  KOTOBA_GRAPH is the multibase CID derived from graph-name bytes (local only).
+  KOTOBA_TOKEN is a Bearer JWT; sub + non-expired exp are required.
+  KOTOBA_KG=1 switches to the kg.ingest checkpointer (kotobase.net mode)."
   (:require [langchain.kotoba-db         :as kdb]
             [langgraph.kotoba-checkpoint :as kcp]
+            [langgraph.kg-checkpoint     :as kgcp]
             [langgraph.checkpoint        :as cp]
             [langgraph.graph             :as lg]
             [clojure.data.json           :as json])
@@ -70,19 +80,28 @@
 (defn -main [& _]
   (let [url   (or (System/getenv "KOTOBA_URL")   "http://localhost:8077")
         graph (or (System/getenv "KOTOBA_GRAPH") "langgraph-clj-test")
-        token (System/getenv "KOTOBA_TOKEN")]
+        token (System/getenv "KOTOBA_TOKEN")
+        kg?   (= "1" (System/getenv "KOTOBA_KG"))]
 
-    (println (str "\n=== kotoba E2E: " url " graph=" graph " ===\n"))
+    (if kg?
+      (println (str "\n=== kotoba E2E (kg-checkpointer): " url " ===\n"))
+      (println (str "\n=== kotoba E2E: " url " graph=" graph " ===\n")))
 
-    (let [conn (kdb/kotoba-conn url graph (when token {:token token}))]
+    (let [conn  (if kg?
+                  ;; kg-checkpointer: point conn at kotobase-kg-v1 graph for reads
+                  (kdb/kotoba-conn url kdb/KG-GRAPH-CID (when token {:token token}))
+                  (kdb/kotoba-conn url graph (when token {:token token})))]
 
-      ;; Ensure schema is present (idempotent)
-      (print "Ensuring checkpoint schema... ")
-      (flush)
-      (kcp/ensure-schema! conn host-caps)
-      (println "ok")
+      (when-not kg?
+        ;; Ensure schema is present (idempotent; only needed for datomic-checkpointer)
+        (print "Ensuring checkpoint schema... ")
+        (flush)
+        (kcp/ensure-schema! conn host-caps)
+        (println "ok"))
 
-      (let [cp    (kcp/checkpointer conn host-caps)
+      (let [cp    (if kg?
+                    (kgcp/kg-checkpointer conn host-caps)
+                    (kcp/checkpointer conn host-caps))
             g     (make-graph cp)]
 
         ;; ── run 3 threads in parallel ─────────────────────────────────────
