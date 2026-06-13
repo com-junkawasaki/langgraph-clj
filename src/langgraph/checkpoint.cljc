@@ -61,7 +61,8 @@
      (reify Checkpointer
        (-put! [_ tid {:keys [step state frontier status] :as ckpt}]
          (transact! conn
-                    [{:checkpoint/key (str tid "/" step)
+                    [{:db/id (str tid "/" step)
+                      :checkpoint/key (str tid "/" step)
                       :checkpoint/thread tid
                       :checkpoint/step step
                       :checkpoint/state (pr-str state)
